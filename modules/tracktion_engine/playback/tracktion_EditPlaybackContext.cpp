@@ -699,6 +699,10 @@ void EditPlaybackContext::createNode()
     // still be processing them if that would re-run their initialise()
     nodePlaybackContext->clearNodeIfFormatChanged (cnp.sampleRate, cnp.blockSize);
 
+    // R8: render-ahead (the host may leave out the tracks it renders ahead)
+    if (auto& hook = createNodeParamsHook())
+        hook (edit, cnp);
+
     auto editNode = createNodeForEdit (*this, audiblePlaybackTime, cnp);
 
     nodePlaybackContext->setNode (std::move (editNode), cnp.sampleRate, cnp.blockSize);

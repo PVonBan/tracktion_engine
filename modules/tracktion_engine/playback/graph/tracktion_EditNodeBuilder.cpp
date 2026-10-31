@@ -1765,6 +1765,9 @@ std::unique_ptr<tracktion::graph::Node> createNodeForSubmixTrack (FolderTrack& s
 //==============================================================================
 std::unique_ptr<tracktion::graph::Node> createNodeForTrack (Track& track, const CreateNodeParams& params)
 {
+    if (params.r8ExcludedTracks.contains (track.itemID))     // R8: render-ahead
+        return {};
+
     if (auto t = dynamic_cast<AudioTrack*> (&track))
     {
         if (! t->isProcessing (true))
@@ -2246,5 +2249,11 @@ std::unique_ptr<tracktion::graph::Node> createGeneratorPluginNode (const Plugin:
 
 std::function<std::unique_ptr<tracktion::graph::Node> (std::unique_ptr<tracktion::graph::Node>)> EditNodeBuilder::insertOptionalLastStageNode
     = [] (std::unique_ptr<tracktion::graph::Node> input) { return input; };
+
+// R8: render-ahead
+std::unique_ptr<tracktion::graph::Node> createNodeForSingleTrack (Track& t, const CreateNodeParams& params)
+{
+    return createNodeForTrack (t, params);
+}
 
 } // namespace tracktion::inline engine

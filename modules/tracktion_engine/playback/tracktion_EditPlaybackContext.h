@@ -41,6 +41,14 @@ public:
                                                                                                       const CreateNodeParams&,
                                                                                                       std::unique_ptr<graph::Node>)>);
 
+    /** R8: render-ahead. Called with the CreateNodeParams just before each live graph is built (on the message
+        thread), so a host can change them, e.g. leave out tracks it renders itself (r8ExcludedTracks). */
+    static std::function<void (Edit&, CreateNodeParams&)>& createNodeParamsHook()
+    {
+        static std::function<void (Edit&, CreateNodeParams&)> hook;
+        return hook;
+    }
+
     /** Returns true if a playback graph is currently allocated. */
     bool isPlaybackGraphAllocated() const       { return isAllocated; }
 
