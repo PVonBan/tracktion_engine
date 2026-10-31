@@ -1830,6 +1830,13 @@ void Edit::timerCallback()
 
     if (shouldRestartPlayback && shouldPlay())
     {
+        // R8: restart fade cut short (the transport stopped while the fade waited: end it)
+        if (r8FadeWaits > 0 && ! (r8RestartFadeMs && getTransport().isPlaying()))
+        {
+            r8FadeWaits = 0;
+            engine.getDeviceManager().r8OutputTarget.store (1.0f);
+        }
+
         // R8: restart fade
         if (r8RestartFadeMs && getTransport().isPlaying())
         {
@@ -1859,7 +1866,8 @@ void Edit::timerCallback()
         getTransport().editHasChanged();
     }
 
-    stopTimer();
+    if (! shouldRestartPlayback)        // R8: restart fade cut short (a restart asked for meanwhile keeps the timer)
+        stopTimer();
 }
 
 //==============================================================================
