@@ -59,6 +59,43 @@ struct AudioFileCache::ScopedFileRead
 
 
 //==============================================================================
+// R8: a reader-writer lock whose try-read never waits or allocates (the playback read on the audio thread)
+struct R8RWLock
+{
+    bool tryEnterRead() const noexcept
+    {
+        auto n = state.load (std::memory_order_relaxed);
+        while (n >= 0)
+            if (state.compare_exchange_weak (n, n + 1, std::memory_order_acquire, std::memory_order_relaxed))
+                return true;
+        return false;
+    }
+    void enterRead() const noexcept         { for (int i = 0; ! tryEnterRead(); ++i) backOff (i); }
+    void exitRead() const noexcept          { state.fetch_sub (1, std::memory_order_release); }
+    void enterWrite() const noexcept
+    {
+        for (int i = 0;; ++i)
+        {
+            int idle = 0;
+            if (state.compare_exchange_weak (idle, -1, std::memory_order_acquire, std::memory_order_relaxed))
+                return;
+            backOff (i);
+        }
+    }
+    void exitWrite() const noexcept         { state.store (0, std::memory_order_release); }
+
+    static void backOff (int i)
+    {
+        if (i < 64)         std::this_thread::yield();
+        else                std::this_thread::sleep_for (std::chrono::microseconds (100));
+    }
+
+    mutable std::atomic<int> state { 0 };   // > 0: that many readers; -1: a writer
+};
+
+struct R8ScopedReadLock   { explicit R8ScopedReadLock (const R8RWLock& l) noexcept : lock (l) { lock.enterRead(); }   ~R8ScopedReadLock()  { lock.exitRead(); }  const R8RWLock& lock; };
+struct R8ScopedWriteLock  { explicit R8ScopedWriteLock (const R8RWLock& l) noexcept : lock (l) { lock.enterWrite(); } ~R8ScopedWriteLock() { lock.exitWrite(); } const R8RWLock& lock; };
+
 //==============================================================================
 class AudioFileCache::CachedFile
 {
@@ -98,7 +135,7 @@ public:
             }
         }
 
-        const juce::ScopedReadLock sl (readerLock);
+        const R8ScopedReadLock sl (readerLock);
 
         for (auto pos : readPoints)
             touchAllReaders ({ pos, pos + 128 });
@@ -129,7 +166,7 @@ public:
     bool updateBlocks()
     {
         {
-            const juce::ScopedReadLock sl (readerLock);
+            const R8ScopedReadLock sl (readerLock);
 
             if (mapEntireFile && readers.size() > 0)
                 return false;
@@ -146,7 +183,7 @@ public:
                             < lastFailedOpenAttempt + 4000 + (uint32_t) random.nextInt (3000))
                     return false;
 
-                const juce::ScopedWriteLock sl (readerLock);
+                const R8ScopedWriteLock sl (readerLock);
 
                 if (auto r = createNewReader (nullptr))
                 {
@@ -212,7 +249,7 @@ public:
             juce::OwnedArray<juce::MemoryMappedAudioFormatReader> newReaders;
 
             {
-                const juce::ScopedReadLock sl (readerLock);
+                const R8ScopedReadLock sl (readerLock);
 
                 for (int i = 0; i < blocksNeeded.size(); ++i)
                 {
@@ -241,7 +278,7 @@ public:
             }
 
             {
-                const juce::ScopedWriteLock sl (readerLock);
+                const R8ScopedWriteLock sl (readerLock);
                 newReaders.swapWith (readers);
                 currentBlocks.swapWith (blocksNeeded);
 
@@ -313,7 +350,7 @@ public:
 
     void releaseReader()
     {
-        const juce::ScopedWriteLock sl (readerLock);
+        const R8ScopedWriteLock sl (readerLock);
         readers.clear();
         currentBlocks.clear();
     }
@@ -379,7 +416,7 @@ public:
         }
 
         juce::MemoryMappedAudioFormatReader* reader = nullptr;
-        juce::ReadWriteLock& lock;
+        R8RWLock& lock;
         bool isLocked = true;
 
         JUCE_DECLARE_NON_COPYABLE (LockedReaderFinder)
@@ -502,7 +539,8 @@ private:
     uint32_t lastFailedOpenAttempt = 0;
     juce::Random random;
 
-    juce::ReadWriteLock clientListLock, readerLock;
+    juce::ReadWriteLock clientListLock;
+    R8RWLock readerLock;
 
     juce::MemoryMappedAudioFormatReader* findReaderFor (SampleCount sample) const
     {
