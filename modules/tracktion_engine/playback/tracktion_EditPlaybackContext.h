@@ -157,6 +157,16 @@ public:
 
     /** @see tracktion::graph::ThreadPoolStrategy */
     static void setThreadPoolStrategy (int);
+
+    /** R8: idle gate. While stopped, with no input routed and the output silent for 2 s, callbacks skip the graph
+        (one probe callback every 0.5 s). Off unless the host turns it on. r8Wake() opens it at once. */
+    static std::atomic<bool>& r8IdleGateEnabled()       { static std::atomic<bool> on { false }; return on; }
+    static std::atomic<uint32_t>& r8WakeCount()         { static std::atomic<uint32_t> n { 0 }; return n; }
+    static void r8Wake()                                { r8WakeCount().fetch_add (1, std::memory_order_release); }
+    /** R8: true while the gate is skipping the graph (for tests and the DSP readout). */
+    bool r8IsIdleGated() const;
+    /** R8: callbacks skipped by the gate so far. */
+    int64_t r8IdleSkipped() const;
     /** @see tracktion::graph::ThreadPoolStrategy */
     static int getThreadPoolStrategy();
 

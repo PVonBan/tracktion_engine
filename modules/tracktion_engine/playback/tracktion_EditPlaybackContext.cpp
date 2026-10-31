@@ -392,6 +392,10 @@ struct EditPlaybackContext::NodePlaybackContext
             }
         }
 
+        // R8: idle gate
+        if (r8SkipThisBlock (allChannels, numChannels, destNumSamples))
+            return;
+
         scratchMidiBuffer.clear();
 
         if (isUsingInterpolator || destNumSamples != (int) numSamplesToProcess)
@@ -429,6 +433,8 @@ struct EditPlaybackContext::NodePlaybackContext
 
         tempoState = { tempoSequence.getInternalSequence().hash(),
                        processState.editBeatRange.getEnd() };
+
+        r8AfterBlock (allChannels, numChannels, destNumSamples);     // R8: idle gate
     }
 
     double getSampleRate() const
@@ -463,6 +469,59 @@ private:
     double speedCompensation = 0.0, blockLengthScaleFactor = 1.0;
     std::vector<std::unique_ptr<juce::LagrangeInterpolator>> interpolators;
     bool isUsingInterpolator = false;
+
+public:
+    // R8: idle gate (see EditPlaybackContext::r8IdleGateEnabled)
+    std::atomic<bool> r8LiveInputs { true }, r8Gated { false };
+    std::atomic<int64_t> r8Skipped { 0 };
+    int64_t r8SilentSamples = 0, r8SinceProbe = 0;
+    uint32_t r8SeenWake = 0;
+
+    // true: this callback outputs silence without running the graph
+    bool r8SkipThisBlock (float* const* allChannels, int numChannels, int n)
+    {
+        const auto wake = EditPlaybackContext::r8WakeCount().load (std::memory_order_acquire);
+        const double sr = getSampleRate();
+        const bool may = EditPlaybackContext::r8IdleGateEnabled().load (std::memory_order_relaxed)
+                          && ! playHead.isPlaying() && ! playPending.load (std::memory_order_relaxed)
+                          && ! positionUpdatePending.load (std::memory_order_relaxed)
+                          && ! r8LiveInputs.load (std::memory_order_relaxed) && wake == r8SeenWake && sr > 0;
+        if (! may)
+        {
+            r8SeenWake = wake;
+            r8SilentSamples = 0;
+            r8Gated.store (false, std::memory_order_relaxed);
+            return false;
+        }
+        if (r8SilentSamples < (int64_t) (2.0 * sr))
+            return false;
+        r8SinceProbe += n;
+        if (r8SinceProbe >= (int64_t) (0.5 * sr))
+        {
+            r8SinceProbe = 0;                       // a probe: the graph runs; r8AfterBlock decides whether it stays shut
+            return false;
+        }
+        for (int ch = 0; ch < numChannels; ++ch)
+            if (allChannels[ch] != nullptr)
+                juce::FloatVectorOperations::clear (allChannels[ch], n);
+        r8Gated.store (true, std::memory_order_relaxed);
+        r8Skipped.fetch_add (1, std::memory_order_relaxed);
+        return true;
+    }
+
+    // after the graph ran: count silent samples (-100 dB); any sound opens the gate
+    void r8AfterBlock (float* const* allChannels, int numChannels, int n)
+    {
+        float peak = 0.0f;
+        for (int ch = 0; ch < numChannels; ++ch)
+            if (allChannels[ch] != nullptr)
+            {
+                const auto r = juce::FloatVectorOperations::findMinAndMax (allChannels[ch], n);
+                peak = std::max ({ peak, r.getEnd(), -r.getStart() });
+            }
+        if (peak < 1.0e-5f) r8SilentSamples += n;
+        else { r8SilentSamples = 0; r8SinceProbe = 0; r8Gated.store (false, std::memory_order_relaxed); }
+    }
 
     struct TempoState
     {
@@ -707,7 +766,17 @@ void EditPlaybackContext::createNode()
 
     nodePlaybackContext->setNode (std::move (editNode), cnp.sampleRate, cnp.blockSize);
     updateNumCPUs();
+
+    // R8: idle gate: an input routed to a track (armed, monitored, a live MIDI source) keeps the graph running
+    bool live = false;
+    for (auto* in : waveInputs)  live = live || ! in->getTargets().isEmpty();
+    for (auto* in : midiInputs)  live = live || ! in->getTargets().isEmpty();
+    nodePlaybackContext->r8LiveInputs.store (live);
+    r8Wake();
 }
+
+bool EditPlaybackContext::r8IsIdleGated() const     { return nodePlaybackContext->r8Gated.load (std::memory_order_relaxed); }
+int64_t EditPlaybackContext::r8IdleSkipped() const  { return nodePlaybackContext->r8Skipped.load (std::memory_order_relaxed); }
 
 void EditPlaybackContext::setInsertOptionalLastStageNodeForDeviceCallback (std::function<std::unique_ptr<graph::Node> (OutputDevice&,
                                                                                                                       const CreateNodeParams&,
