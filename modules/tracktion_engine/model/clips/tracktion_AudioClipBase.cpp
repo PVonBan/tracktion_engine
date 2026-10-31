@@ -2170,6 +2170,8 @@ struct StretchSegment
             numSamples -= skip;
         }
 
+        int emptyFills = 0;     // R8: stretcher gives nothing (it can't work in this mode): don't ask it forever
+
         while (numSamples > 0)
         {
             auto numReady = std::min (numSamples, readySamplesEnd - readySamplesStart);
@@ -2184,10 +2186,15 @@ struct StretchSegment
                 readySamplesStart += numReady;
                 start += numReady;
                 numSamples -= numReady;
+                emptyFills = 0;
             }
             else
             {
                 auto blockSize = fillNextBlock();
+
+                if (blockSize <= 0 && ++emptyFills > 64)
+                    break;
+
                 renderFades (blockSize);
 
                 readySampleOutputPos += blockSize;
