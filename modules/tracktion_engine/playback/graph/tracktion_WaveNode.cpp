@@ -571,7 +571,7 @@ public:
         }
 
         choc::buffer::copy (destBuffer, interleavedOutputScratchBuffer.getStart (numFramesToDo));
-        readPosition += numFramesToDo;
+        readPosition += numFramesToDo * speedRatio;     // R8: the read position moves on by the speed
 
         return true;
     }
