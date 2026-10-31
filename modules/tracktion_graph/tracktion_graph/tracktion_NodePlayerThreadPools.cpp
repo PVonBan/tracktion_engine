@@ -54,9 +54,23 @@ struct ThreadPoolCV : public LockFreeMultiThreadedNodePlayer::ThreadPool
 
         for (size_t i = 0; i < numThreads; ++i)
         {
+           #if JUCE_MAC
+            // R8: real-time helpers v3 (the engine's own way by default; R8_TE_RT_HELPERS=1: each helper upgrades
+            // itself, as the original meant to: it upgraded the creating thread. Tested 2026-10-21: no better)
+            if (std::getenv ("R8_TE_RT_HELPERS") == nullptr)
+            {
+                threads.emplace_back ([this] { runThread(); });
+                setThreadPriority (threads.back(), 10);
+                tryToUpgradeCurrentThreadToRealtime (rtOpts);
+            }
+            else
+            {
+                threads.emplace_back ([this, rtOpts] { tryToUpgradeCurrentThreadToRealtime (rtOpts); runThread(); });
+            }
+           #else
             threads.emplace_back ([this] { runThread(); });
             setThreadPriority (threads.back(), 10);
-            tryToUpgradeCurrentThreadToRealtime (rtOpts);
+           #endif
         }
     }
 
@@ -189,9 +203,23 @@ struct ThreadPoolRT : public LockFreeMultiThreadedNodePlayer::ThreadPool
 
         for (size_t i = 0; i < numThreads; ++i)
         {
+           #if JUCE_MAC
+            // R8: real-time helpers v3 (the engine's own way by default; R8_TE_RT_HELPERS=1: each helper upgrades
+            // itself, as the original meant to: it upgraded the creating thread. Tested 2026-10-21: no better)
+            if (std::getenv ("R8_TE_RT_HELPERS") == nullptr)
+            {
+                threads.emplace_back ([this] { runThread(); });
+                setThreadPriority (threads.back(), 10);
+                tryToUpgradeCurrentThreadToRealtime (rtOpts);
+            }
+            else
+            {
+                threads.emplace_back ([this, rtOpts] { tryToUpgradeCurrentThreadToRealtime (rtOpts); runThread(); });
+            }
+           #else
             threads.emplace_back ([this] { runThread(); });
             setThreadPriority (threads.back(), 10);
-            tryToUpgradeCurrentThreadToRealtime (rtOpts);
+           #endif
         }
     }
 
@@ -299,9 +327,23 @@ struct ThreadPoolHybrid : public LockFreeMultiThreadedNodePlayer::ThreadPool
 
         for (size_t i = 0; i < numThreads; ++i)
         {
+           #if JUCE_MAC
+            // R8: real-time helpers v3 (the engine's own way by default; R8_TE_RT_HELPERS=1: each helper upgrades
+            // itself, as the original meant to: it upgraded the creating thread. Tested 2026-10-21: no better)
+            if (std::getenv ("R8_TE_RT_HELPERS") == nullptr)
+            {
+                threads.emplace_back ([this] { runThread(); });
+                setThreadPriority (threads.back(), 10);
+                tryToUpgradeCurrentThreadToRealtime (rtOpts);
+            }
+            else
+            {
+                threads.emplace_back ([this, rtOpts] { tryToUpgradeCurrentThreadToRealtime (rtOpts); runThread(); });
+            }
+           #else
             threads.emplace_back ([this] { runThread(); });
             setThreadPriority (threads.back(), 10);
-            tryToUpgradeCurrentThreadToRealtime (rtOpts);
+           #endif
         }
     }
 
@@ -455,9 +497,23 @@ struct ThreadPoolSem : public LockFreeMultiThreadedNodePlayer::ThreadPool
 
         for (size_t i = 0; i < numThreads; ++i)
         {
+           #if JUCE_MAC
+            // R8: real-time helpers v3 (the engine's own way by default; R8_TE_RT_HELPERS=1: each helper upgrades
+            // itself, as the original meant to: it upgraded the creating thread. Tested 2026-10-21: no better)
+            if (std::getenv ("R8_TE_RT_HELPERS") == nullptr)
+            {
+                threads.emplace_back ([this] { runThread(); });
+                setThreadPriority (threads.back(), 10);
+                tryToUpgradeCurrentThreadToRealtime (rtOpts);
+            }
+            else
+            {
+                threads.emplace_back ([this, rtOpts] { tryToUpgradeCurrentThreadToRealtime (rtOpts); runThread(); });
+            }
+           #else
             threads.emplace_back ([this] { runThread(); });
             setThreadPriority (threads.back(), 10);
-            tryToUpgradeCurrentThreadToRealtime (rtOpts);
+           #endif
         }
     }
 
@@ -562,9 +618,23 @@ struct ThreadPoolSemHybrid : public LockFreeMultiThreadedNodePlayer::ThreadPool
 
         for (size_t i = 0; i < numThreads; ++i)
         {
+           #if JUCE_MAC
+            // R8: real-time helpers v3 (the engine's own way by default; R8_TE_RT_HELPERS=1: each helper upgrades
+            // itself, as the original meant to: it upgraded the creating thread. Tested 2026-10-21: no better)
+            if (std::getenv ("R8_TE_RT_HELPERS") == nullptr)
+            {
+                threads.emplace_back ([this] { runThread(); });
+                setThreadPriority (threads.back(), 10);
+                tryToUpgradeCurrentThreadToRealtime (rtOpts);
+            }
+            else
+            {
+                threads.emplace_back ([this, rtOpts] { tryToUpgradeCurrentThreadToRealtime (rtOpts); runThread(); });
+            }
+           #else
             threads.emplace_back ([this] { runThread(); });
             setThreadPriority (threads.back(), 10);
-            tryToUpgradeCurrentThreadToRealtime (rtOpts);
+           #endif
         }
     }
 
