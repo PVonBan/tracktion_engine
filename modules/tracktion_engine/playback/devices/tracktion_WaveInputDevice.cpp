@@ -284,7 +284,10 @@ public:
             {
                 isTrackRecordingWithPunch = recContext->recordingWithPunch;
                 muteTrackNow = recContext->muteTargetNow;
-                muteTrackContentsWhilstRecording = recContext->muteTrackContentsWhilstRecording;
+                // R8: the behaviour is read live as well, so the host can lift the mute mid-take (a post-roll after STOP:
+                // the take has ended for the host but the device is still recording until the real stop)
+                muteTrackContentsWhilstRecording = recContext->muteTrackContentsWhilstRecording
+                                                    && t.edit.engine.getEngineBehaviour().muteTrackContentsWhilstRecording();
                 isActivelyRecording = recContext->hasHitThreshold;
             }
         }
