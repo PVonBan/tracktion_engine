@@ -105,6 +105,10 @@ public:
     /** Callback that is used to determine if a plugin should use fine-grain automation or not. */
     std::function<bool (Plugin&)> canUseFineGrainAutomation;
 
+    /** R8: automation sub-block. The sub-block (in samples at 44.1/48 kHz, scaled with the rate) in which a plug-in's
+        automation is applied; 128 is the engine's own value. Set before the graph is built. */
+    int r8AutomationSubBlock = 128;
+
     // this can be set to provide a function that gets called when a scan finishes
     std::function<void()> scanCompletedCallback;
 

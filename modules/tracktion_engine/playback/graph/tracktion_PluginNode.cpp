@@ -118,7 +118,10 @@ void PluginNode::prepareToPlay (const tracktion::graph::PlaybackInitialisationIn
         automationAdjustmentTime = TimeDuration::fromSamples (-props.latencyNumSamples, sampleRate);
 
     if (shouldUseFineGrainAutomation (*plugin))
-        subBlockSizeToUse = std::max (128, 128 * juce::roundToInt (info.sampleRate / 44100.0));
+    {
+        const int sb = std::max (1, plugin->engine.getPluginManager().r8AutomationSubBlock);    // R8: automation sub-block
+        subBlockSizeToUse = std::max (sb, sb * juce::roundToInt (info.sampleRate / 44100.0));
+    }
 
     canProcessBypassed = balanceLatency
                             && dynamic_cast<ExternalPlugin*> (plugin.get()) != nullptr
