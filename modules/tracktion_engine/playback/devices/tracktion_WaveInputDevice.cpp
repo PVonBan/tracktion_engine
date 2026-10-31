@@ -39,8 +39,11 @@ public:
 
     void handleAsyncUpdate() override
     {
-        TransportControl::stopAllTransports (engine, false, false);
-        engine.getUIBehaviour().showWarningMessage (TRANS("Recording error - disk space is getting dangerously low!"));
+        // R8: disk space. Stopping the transports deletes this check (with the recording it belongs to), so nothing of
+        // it may be used afterwards.
+        auto& e = engine;
+        TransportControl::stopAllTransports (e, false, false);
+        e.getUIBehaviour().showWarningMessage (TRANS("Recording error - disk space is getting dangerously low!"));
     }
 
     void timerCallback() override
