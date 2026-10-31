@@ -407,6 +407,28 @@ public:
                 CRASH_TRACER
                 rc->firstRecCallback = true;
 
+                {
+                    // R8: real-time recording: everything the audio thread will need, sized here
+                    auto& dm = edit.engine.getDeviceManager();
+                    const int chans = std::max (1, wi.getChannelSet().size());
+                    const int blockSize = std::max (16, dm.getBlockSize());
+                    edit.engine.getWaveInputRecordingThread().prepareForRealtime (chans, blockSize, rc->sampleRate);
+
+                    {
+                        const std::unique_lock sl (contextLock);
+                        recordingContexts.reserve (recordingContexts.size() + 8);
+                    }
+
+                    const int silenceSize = std::max (blockSize, 128);
+                    if (r8Silence.getNumChannels() < chans || r8Silence.getNumSamples() < silenceSize)
+                    {
+                        r8Silence.setSize (std::max (chans, r8Silence.getNumChannels()), std::max (silenceSize, r8Silence.getNumSamples()));
+                        r8Silence.clear();
+                    }
+                    inputBuffer.setSize (std::max (chans, inputBuffer.getNumChannels()),
+                                         std::max (blockSize, inputBuffer.getNumSamples()), false, false, true);
+                }
+
                 const auto adjustSeconds = wi.getAdjustmentSeconds();
                 rc->adjustSamples = (int) tracktion::toSamples (adjustSeconds, rc->sampleRate);
 
@@ -493,6 +515,7 @@ public:
                 {
                     const std::unique_lock sl (contextLock);
                     recordingContexts.push_back (std::unique_ptr<WaveRecordingContext> (midiContext));
+                    r8NumContexts.store ((int) recordingContexts.size(), std::memory_order_release);    // R8: real-time recording
                 }
 
                 hasAddedContexts = true;
@@ -585,6 +608,7 @@ public:
 
             // Erase any now-empty contexts
             erase_if_null (recordingContexts);
+            r8NumContexts.store ((int) recordingContexts.size(), std::memory_order_release);    // R8: real-time recording
             assert ((recordingContexts.size() + contextsToStop.size()) == numContextsRecording);
         }
 
@@ -720,7 +744,15 @@ public:
             if (isWaitingToClose.load (std::memory_order_acquire))
                 return;
 
-            std::scoped_lock sl (fileWriterLock);
+            // R8: real-time recording: never wait here. The lock is only ever held by the close, which comes
+            // after isWaitingToClose, so a failed try is a block that would have been thrown away anyway.
+            if (! fileWriterLock.try_lock())
+            {
+                ++engine.getWaveInputRecordingThread().numBlocksNotQueued;
+                return;
+            }
+
+            std::scoped_lock sl (std::adopt_lock, fileWriterLock);
 
             if (fileWriter != nullptr)
                 engine.getWaveInputRecordingThread().addBlockToRecord (*fileWriter, buffer,
@@ -1175,7 +1207,7 @@ public:
     {
         auto& wi = getWaveInput();
         auto& channelSet = wi.getChannelSet();
-        inputBuffer.setSize (channelSet.size(), numSamples);
+        inputBuffer.setSize (channelSet.size(), numSamples, false, false, true);   // R8: real-time recording: sized when the recording is prepared
 
         if (numChannels == 0)
         {
@@ -1241,7 +1273,18 @@ public:
 
         {
             const auto blockStart = context.globalStreamTimeToEditTimeUnlooped (streamTime);
-            const std::shared_lock sl (contextLock);
+
+            // R8: real-time recording: never wait for the message thread (it holds the lock while a take starts or
+            // stops); a block skipped while a take is running is counted, never lost silently
+            if (! contextLock.try_lock_shared())
+            {
+                if (r8NumContexts.load (std::memory_order_acquire) > 0)
+                    ++edit.engine.getWaveInputRecordingThread().numBlocksNotQueued;
+
+                return;
+            }
+
+            const std::shared_lock sl (contextLock, std::adopt_lock);
 
             for (auto& recordingContext : recordingContexts)
             {
@@ -1277,11 +1320,21 @@ public:
 
                     if (adjustSamples < 0)
                     {
-                        // add silence
-                        AudioScratchBuffer silence (inputBuffer.getNumChannels(), -adjustSamples);
-                        silence.buffer.clear();
+                        // add silence (R8: real-time recording: from a buffer sized beforehand, a block at a time)
+                        if (r8Silence.getNumChannels() < inputBuffer.getNumChannels() || r8Silence.getNumSamples() < 1)
+                        {
+                            ++edit.engine.getWaveInputRecordingThread().numAudioThreadAllocations;
+                            r8Silence.setSize (inputBuffer.getNumChannels(), std::max (r8Silence.getNumSamples(), 512));
+                            r8Silence.clear();
+                        }
 
-                        recordingContext->addBlockToRecord (silence.buffer, 0, silence.buffer.getNumSamples());
+                        for (int left = -adjustSamples; left > 0;)
+                        {
+                            const int n = std::min (left, r8Silence.getNumSamples());
+                            recordingContext->addBlockToRecord (r8Silence, 0, n);
+                            left -= n;
+                        }
+
                         recordingContext->adjustSamples = 0;
                     }
                     else if (adjustSamples > 0)
@@ -1309,9 +1362,11 @@ public:
 protected:
     mutable std::shared_mutex contextLock;
     std::vector<std::unique_ptr<WaveRecordingContext>> recordingContexts;
+    std::atomic<int> r8NumContexts { 0 };    // R8: real-time recording: how many takes are running (read without the lock)
     std::unique_ptr<RecordStopper> recordStopper;
 
     juce::AudioBuffer<float> inputBuffer;
+    juce::AudioBuffer<float> r8Silence;    // R8: real-time recording: punch-in silence, sized when a recording is prepared
 
     WaveRecordingContext* getContextForID (EditItemID targetID) const
     {
@@ -1386,6 +1441,7 @@ WaveInputDevice::WaveInputDevice (Engine& e, const WaveDeviceDescription& desc, 
 {
     enabled = desc.enabled;
     loadProps();
+    r8IdleBuffer.setSize (std::max (1, channelSet.size()), std::max (512, e.getDeviceManager().getBlockSize()));   // R8: real-time recording
 }
 
 WaveInputDevice::~WaveInputDevice()
@@ -1787,12 +1843,31 @@ void WaveInputDevice::addInstance (WaveInputDeviceInstance* i)
 {
     const juce::ScopedLock sl (instanceLock);
     instances.addIfNotAlreadyThere (i);
+    r8PublishInstances();
 }
 
 void WaveInputDevice::removeInstance (WaveInputDeviceInstance* i)
 {
     const juce::ScopedLock sl (instanceLock);
     instances.removeAllInstancesOf (i);
+    r8PublishInstances();
+
+    // a callback that already saw this instance finishes before it is destroyed
+    while (r8CallbackBusy.load (std::memory_order_acquire) != 0)
+        std::this_thread::yield();
+}
+
+// R8: real-time recording. Called with instanceLock held (message thread). Writes the list the callback reads.
+void WaveInputDevice::r8PublishInstances()
+{
+    const int n = std::min (instances.size(), r8MaxInstances);
+    jassert (instances.size() <= r8MaxInstances);
+    r8NumInstances.store (0, std::memory_order_release);
+
+    for (int k = 0; k < n; ++k)
+        r8Instances[k].store (instances[k], std::memory_order_relaxed);
+
+    r8NumInstances.store (n, std::memory_order_release);
 }
 
 //==============================================================================
@@ -1800,12 +1875,15 @@ void WaveInputDevice::consumeNextAudioBlock (const float* const* allChannels, in
 {
     if (enabled)
     {
-        const juce::ScopedLock sl (instanceLock);
+        // R8: real-time recording: no lock here; the instance list is published by the message thread
+        r8CallbackBusy.fetch_add (1, std::memory_order_acq_rel);
+        const int n = r8NumInstances.load (std::memory_order_acquire);
 
-        if (instances.isEmpty())
+        if (n == 0)
         {
             auto& groupChannelSet = getChannelSet();
-            juce::AudioBuffer<float> buf (groupChannelSet.size(), numSamples);
+            auto& buf = r8IdleBuffer;
+            buf.setSize (groupChannelSet.size(), numSamples, false, false, true);   // sized in the constructor; allocates only if bigger
             buf.clear();
 
             for (const auto& ci : getChannels())
@@ -1822,8 +1900,13 @@ void WaveInputDevice::consumeNextAudioBlock (const float* const* allChannels, in
         {
             bool isFirst = true;
 
-            for (auto i : instances)
+            for (int k = 0; k < n; ++k)
             {
+                auto* i = r8Instances[k].load (std::memory_order_relaxed);
+
+                if (i == nullptr)
+                    continue;
+
                 i->acceptInputBuffer (allChannels, numChannels, numSamples, streamTime,
                                      isFirst ? &levelMeasurer : nullptr,
                                      (! retrospectiveRecordLock) ? retrospectiveBuffer.get() : nullptr,
@@ -1831,6 +1914,8 @@ void WaveInputDevice::consumeNextAudioBlock (const float* const* allChannels, in
                 isFirst = false;
             }
         }
+
+        r8CallbackBusy.fetch_sub (1, std::memory_order_acq_rel);
     }
 }
 
@@ -1842,129 +1927,278 @@ void WaveInputDevice::updateRetrospectiveBufferLength (double length)
 }
 
 //==============================================================================
+// R8: real-time recording. The pool of blocks and the queue to the writer, without locks on the audio thread.
+//  - Every block is owned by `slots` for the life of the queue (never freed while in use), and has an `inUse` flag:
+//    the audio thread claims a free block with one compare-exchange (starting at the block after the last one it
+//    took, so it usually finds one at once), the recording thread clears the flag when the block is written.
+//  - Blocks wait for the writer in an intrusive multi-producer single-consumer queue (the audio threads push, the
+//    recording thread pops; a push is two atomic stores; a pop that meets a push half done just returns nothing
+//    and tries again later).
+//  - The pool is sized by prepareForRealtime (message thread): new blocks are added, and free blocks that are too
+//    small are grown there; a block in flight is grown by the recording thread when it comes back.
 struct WaveInputRecordingThread::BlockQueue
 {
-    BlockQueue()
-    {
-        for (int i = 32; --i >= 0;)
-            addToFreeQueue (new QueuedBlock());
-    }
+    static constexpr int maxBlocks = 16384;
 
-    struct QueuedBlock
+    struct Node
     {
-        QueuedBlock() = default;
+        std::atomic<Node*> next { nullptr };
+    };
 
-        void load (AudioFileWriter& w, const juce::AudioBuffer<float>& newBuffer,
+    struct QueuedBlock : public Node
+    {
+        QueuedBlock (int chans, int samples)
+            : buffer (std::max (1, chans), std::max (1, samples)), capChannels (std::max (1, chans)), capSamples (std::max (1, samples)) {}
+
+        /** Fills the block. Allocates only if the block is too small for what arrives (counted by the caller). */
+        bool load (AudioFileWriter& w, const juce::AudioBuffer<float>& newBuffer,
                    int start, int numSamples, const RecordingThumbnailManager::Thumbnail::Ptr& thumb)
         {
-            buffer.setSize (newBuffer.getNumChannels(), numSamples);
+            const int chans = newBuffer.getNumChannels();
+            bool allocated = false;
+
+            if (chans > capChannels.load (std::memory_order_relaxed) || numSamples > capSamples.load (std::memory_order_relaxed))
+            {
+                grow (chans, numSamples);
+                allocated = true;
+            }
+
+            buffer.setSize (chans, numSamples, false, false, true);
 
             for (int i = buffer.getNumChannels(); --i >= 0;)
                 buffer.copyFrom (i, 0, newBuffer, i, start, numSamples);
 
             writer = &w;
             thumbnail = thumb;
+            return allocated;
+        }
+
+        /** Grows the block (not on the audio thread; the block must not be in use). */
+        void ensureCapacity (int chans, int samples)
+        {
+            if (chans <= capChannels.load (std::memory_order_relaxed) && samples <= capSamples.load (std::memory_order_relaxed))
+                return;
+
+            grow (chans, samples);
+        }
+
+        void grow (int chans, int samples)
+        {
+            const int c = std::max (chans, capChannels.load (std::memory_order_relaxed));
+            const int n = std::max (samples, capSamples.load (std::memory_order_relaxed));
+            buffer.setSize (c, n);
+            capChannels.store (c, std::memory_order_relaxed);
+            capSamples.store (n, std::memory_order_relaxed);
         }
 
         std::atomic<AudioFileWriter*> writer { nullptr };
-        QueuedBlock* next = nullptr;
-        juce::AudioBuffer<float> buffer { 2, 512 };
+        std::atomic<bool> inUse { false };
+        juce::AudioBuffer<float> buffer;
+        std::atomic<int> capChannels { 0 }, capSamples { 0 };
         RecordingThumbnailManager::Thumbnail::Ptr thumbnail;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (QueuedBlock)
     };
 
-    juce::CriticalSection freeQueueLock, pendingQueueLock;
-    QueuedBlock* firstPending = nullptr;
-    QueuedBlock* lastPending = nullptr;
-    QueuedBlock* firstFree = nullptr;
-    std::atomic<int> numPending { 0 };
-    std::mutex processingMutex;
-
-    QueuedBlock* findFreeBlock()
+    BlockQueue()
+        : slots (new std::atomic<QueuedBlock*>[maxBlocks])
     {
-        const juce::ScopedLock sl (freeQueueLock);
+        for (int i = 0; i < maxBlocks; ++i)
+            slots[i].store (nullptr, std::memory_order_relaxed);
 
-        if (firstFree == nullptr)
-            return new QueuedBlock();
-
-        auto* b = firstFree;
-        firstFree = b->next;
-        b->next = nullptr;
-        return b;
+        pendingHead.store (&stub, std::memory_order_relaxed);
+        pendingTail = &stub;
+        ensurePool (64, 2, 512);
     }
 
+    ~BlockQueue()
+    {
+        const int n = numBlocks.load();
+
+        for (int i = 0; i < n; ++i)
+            delete slots[i].load();
+    }
+
+    //==============================================================================
+    // the pool
+    std::unique_ptr<std::atomic<QueuedBlock*>[]> slots;
+    std::atomic<int> numBlocks { 0 };
+    std::atomic<int> takeHint { 0 };
+    std::atomic<int> wantedChannels { 2 }, wantedSamples { 512 };
+    std::mutex growLock;    // message thread only
+
+    /** Message thread. Adds blocks until there are `count` of them, and grows the free ones that are too small. */
+    void ensurePool (int count, int chans, int samples)
+    {
+        const std::scoped_lock sl (growLock);
+        chans = std::max (chans, wantedChannels.load());
+        samples = std::max (samples, wantedSamples.load());
+        wantedChannels.store (chans);
+        wantedSamples.store (samples);
+
+        const int have = numBlocks.load (std::memory_order_acquire);
+
+        for (int i = 0; i < have; ++i)
+        {
+            auto* b = slots[i].load (std::memory_order_relaxed);
+
+            if (b->capChannels.load (std::memory_order_relaxed) >= chans && b->capSamples.load (std::memory_order_relaxed) >= samples)
+                continue;
+
+            bool wasFree = false;
+
+            if (b->inUse.compare_exchange_strong (wasFree, true, std::memory_order_acq_rel))
+            {
+                b->ensureCapacity (chans, samples);
+                b->inUse.store (false, std::memory_order_release);
+            }
+            // else: in flight; the recording thread grows it when it comes back
+        }
+
+        for (int n = have; n < std::min (count, maxBlocks); ++n)
+        {
+            slots[n].store (new QueuedBlock (chans, samples), std::memory_order_relaxed);
+            numBlocks.store (n + 1, std::memory_order_release);
+        }
+    }
+
+    /** Audio thread. A free block, or nullptr when every block is in flight. */
+    QueuedBlock* takeFreeBlock() noexcept
+    {
+        const int n = numBlocks.load (std::memory_order_acquire);
+
+        if (n <= 0)
+            return nullptr;
+
+        int i = takeHint.load (std::memory_order_relaxed);
+
+        if (i < 0 || i >= n)
+            i = 0;
+
+        for (int k = 0; k < n; ++k)
+        {
+            auto* b = slots[i].load (std::memory_order_relaxed);
+            bool wasFree = false;
+
+            if (b->inUse.compare_exchange_strong (wasFree, true, std::memory_order_acq_rel))
+            {
+                takeHint.store (i + 1 < n ? i + 1 : 0, std::memory_order_relaxed);
+                return b;
+            }
+
+            if (++i >= n)
+                i = 0;
+        }
+
+        return nullptr;
+    }
+
+    /** Recording or message thread. Puts a block back, grown first if the pool's size has gone up. */
     void addToFreeQueue (QueuedBlock* b) noexcept
     {
         jassert (b != nullptr);
-        const juce::ScopedLock sl (freeQueueLock);
         b->writer = nullptr;
-        b->next = firstFree;
-        firstFree = b;
+        b->thumbnail = nullptr;
+        b->ensureCapacity (wantedChannels.load(), wantedSamples.load());
+        b->inUse.store (false, std::memory_order_release);
     }
 
+    //==============================================================================
+    // the queue to the writer (multi-producer, single-consumer)
+    Node stub;
+    std::atomic<Node*> pendingHead;     // the most recently pushed
+    Node* pendingTail = nullptr;        // consumer's end
+    std::atomic<int> numPending { 0 };
+    std::mutex processingMutex;
+
+    void pushNode (Node* n) noexcept
+    {
+        n->next.store (nullptr, std::memory_order_relaxed);
+        auto* prev = pendingHead.exchange (n, std::memory_order_acq_rel);
+        prev->next.store (n, std::memory_order_release);
+    }
+
+    /** Audio thread. */
     void addToPendingQueue (QueuedBlock* b) noexcept
     {
         jassert (b != nullptr);
-        b->next = nullptr;
-        const juce::ScopedLock sl (pendingQueueLock);
-
-        if (lastPending != nullptr)
-            lastPending->next = b;
-        else
-            firstPending = b;
-
-        lastPending = b;
         ++numPending;
+        pushNode (b);
     }
 
+    /** Consumer only (the recording thread, or the message thread while it is stopped). */
     QueuedBlock* removeFirstPending() noexcept
     {
-        const juce::ScopedLock sl (pendingQueueLock);
+        auto* tail = pendingTail;
+        auto* next = tail->next.load (std::memory_order_acquire);
 
-        if (auto b = firstPending)
+        if (tail == &stub)
         {
-            firstPending = b->next;
+            if (next == nullptr)
+                return nullptr;
 
-            if (firstPending == nullptr)
-                lastPending = nullptr;
-
-            --numPending;
-            return b;
+            pendingTail = next;
+            tail = next;
+            next = next->next.load (std::memory_order_acquire);
         }
 
-        return {};
+        if (next != nullptr)
+        {
+            pendingTail = next;
+            --numPending;
+            return static_cast<QueuedBlock*> (tail);
+        }
+
+        if (tail != pendingHead.load (std::memory_order_acquire))
+            return nullptr;    // a push is half done; it will be complete next time
+
+        pushNode (&stub);
+        next = tail->next.load (std::memory_order_acquire);
+
+        if (next != nullptr)
+        {
+            pendingTail = next;
+            --numPending;
+            return static_cast<QueuedBlock*> (tail);
+        }
+
+        return nullptr;
     }
 
     void moveAnyPendingBlocksToFree() noexcept
     {
-        while (auto b = removeFirstPending())
-            addToFreeQueue (b);
+        for (int tries = 0; tries < 1000; ++tries)
+        {
+            while (auto b = removeFirstPending())
+                addToFreeQueue (b);
+
+            if (numPending.load() <= 0)
+                break;
+
+            std::this_thread::yield();    // a push half done
+        }
 
         jassert (numPending == 0);
         numPending = 0;
     }
 
+    /** Message thread, with processingMutex held (so the consumer's end is still). Says yes when unsure. */
     bool isWriterInQueue (AudioFileWriter& writer) const
     {
-        const juce::ScopedLock sl (pendingQueueLock);
-
-        for (auto b = firstPending; b != nullptr; b = b->next)
-            if (b->writer == &writer)
+        for (const Node* n = pendingTail;;)
+        {
+            if (n != &stub && static_cast<const QueuedBlock*> (n)->writer == &writer)
                 return true;
 
-        return false;
-    }
+            if (n == pendingHead.load (std::memory_order_acquire))
+                return false;
 
-    void deleteFreeQueue() noexcept
-    {
-        auto b = firstFree;
-        firstFree = nullptr;
+            const Node* nx = n->next.load (std::memory_order_acquire);
 
-        while (b != nullptr)
-        {
-            std::unique_ptr<QueuedBlock> toDelete (b);
-            b = b->next;
+            if (nx == nullptr)
+                return true;    // a push half done: can't tell yet
+
+            n = nx;
         }
     }
 };
@@ -1980,8 +2214,16 @@ WaveInputRecordingThread::WaveInputRecordingThread (Engine& e)
 WaveInputRecordingThread::~WaveInputRecordingThread()
 {
     flushAndStop();
-    queue->deleteFreeQueue();
     queue.reset();
+}
+
+// R8: real-time recording
+void WaveInputRecordingThread::prepareForRealtime (int numChannels, int blockSize, double sampleRate)
+{
+    blockSize = std::max (1, blockSize);
+    const double blocksPerTwoSeconds = 2.0 * std::max (8000.0, sampleRate) / blockSize;
+    const int count = juce::jlimit (64, BlockQueue::maxBlocks, (int) std::ceil (blocksPerTwoSeconds) + 64);
+    queue->ensurePool (count, std::max (1, numChannels), blockSize);
 }
 
 void WaveInputRecordingThread::addUser()
@@ -2002,8 +2244,18 @@ void WaveInputRecordingThread::addBlockToRecord (AudioFileWriter& writer, const 
 {
     if (! threadShouldExit())
     {
-        auto block = queue->findFreeBlock();
-        block->load (writer, buffer, start, numSamples, thumbnail);
+        // R8: real-time recording: no lock, no allocation; an empty pool is counted, not waited for
+        auto block = queue->takeFreeBlock();
+
+        if (block == nullptr)
+        {
+            ++numBlocksNotQueued;
+            return;
+        }
+
+        if (block->load (writer, buffer, start, numSamples, thumbnail))
+            ++numAudioThreadAllocations;
+
         queue->addToPendingQueue (block);
         notify();
     }

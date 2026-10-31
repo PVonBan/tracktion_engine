@@ -123,6 +123,13 @@ private:
     juce::Array<WaveInputDeviceInstance*> instances;
     juce::CriticalSection instanceLock;
 
+    // R8: real-time recording: the audio thread reads the instances from here, without the lock
+    static constexpr int r8MaxInstances = 32;
+    std::atomic<WaveInputDeviceInstance*> r8Instances[r8MaxInstances] {};
+    std::atomic<int> r8NumInstances { 0 }, r8CallbackBusy { 0 };
+    juce::AudioBuffer<float> r8IdleBuffer;
+    void r8PublishInstances();
+
     void addInstance (WaveInputDeviceInstance*);
     void removeInstance (WaveInputDeviceInstance*);
 
@@ -152,6 +159,16 @@ public:
 
     void addUser();
     void removeUser();
+
+    //==============================================================================
+    /** R8: real-time recording. Sizes the pool of blocks for a device (message thread): every block holds blockSize
+        samples of numChannels, and there are enough blocks for a 2 s stall at that block size. Never shrinks. */
+    void prepareForRealtime (int numChannels, int blockSize, double sampleRate);
+
+    /** R8: blocks that could not be queued because the pool was empty (recorded audio that was lost). */
+    std::atomic<int64_t> numBlocksNotQueued { 0 };
+    /** R8: times a block had to be grown on the audio thread (a block bigger than the one prepared for). */
+    std::atomic<int64_t> numAudioThreadAllocations { 0 };
 
     //==============================================================================
     void addBlockToRecord (AudioFileWriter&, const juce::AudioBuffer<float>&,
