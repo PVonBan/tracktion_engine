@@ -13,6 +13,15 @@ namespace tracktion::inline engine {
 class AuxSendPlugin   : public Plugin
 {
 public:
+    /** R8: per-sample send gains. The send's level (a gain, not dB) at a time on the timeline, when something else
+        decides it (a lane); called on the audio thread. */
+    struct LevelSource
+    {
+        virtual ~LevelSource() = default;
+        virtual float gainAt (double seconds) noexcept = 0;
+    };
+    std::atomic<LevelSource*> levelSource { nullptr };
+
     AuxSendPlugin (PluginCreationInfo);
     ~AuxSendPlugin() override;
 

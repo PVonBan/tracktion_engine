@@ -372,9 +372,19 @@ static inline std::unique_ptr<Node> makeGainNode (std::unique_ptr<Node> input, f
 
 //==============================================================================
 //==============================================================================
+/** R8: per-sample send gains. Something that can give a gain for each frame of the block being processed. */
+struct PerSampleGainSource
+{
+    virtual ~PerSampleGainSource() = default;
+    /** The gains for this block's frames, or nullptr to use the plain gain function. */
+    virtual const float* getPerSampleGains (choc::buffer::FrameCount) { return nullptr; }
+};
+
 class GainNode final : public Node
 {
 public:
+    PerSampleGainSource* perSampleSource = nullptr;     // R8: per-sample send gains
+
     /** Creates a GainNode that doesn't own its input. */
     GainNode (Node* inputNode, std::function<float()> gainFunc, size_t nodeHashToUse = 0)
         : input (inputNode), gainFunction (std::move (gainFunc)), nodeHash (nodeHashToUse)
@@ -428,6 +438,18 @@ public:
         copy (pc.buffers.audio, input->getProcessedOutput().audio);
         pc.buffers.midi.mergeFrom (input->getProcessedOutput().midi);
 
+        if (perSampleSource != nullptr)
+        {
+            const auto numFrames = pc.buffers.audio.getNumFrames();
+            if (const float* g = numFrames > 0 ? perSampleSource->getPerSampleGains (numFrames) : nullptr)
+            {
+                choc::buffer::FrameCount i = 0;
+                applyGainPerFrame (pc.buffers.audio, [&] { return g[i++]; });
+                lastGain = g[numFrames - 1];
+                return;
+            }
+        }
+
         float gain = gainFunction();
 
         if (gain == lastGain)
@@ -458,7 +480,8 @@ private:
 
 //==============================================================================
 //==============================================================================
-class SendNode  : public Node
+class SendNode  : public Node,
+                  public PerSampleGainSource     // R8: per-sample send gains
 {
 public:
     SendNode (std::unique_ptr<Node> inputNode, int busIDToUse,
@@ -727,7 +750,11 @@ private:
                 if (! gainFunction)
                     continue;
 
-                ownedNodes.push_back (makeNode<GainNode> (std::move (sends[(size_t) i]), std::move (gainFunction), returnNodeID));
+                {
+                    auto gainNode = makeNode<GainNode> (std::move (sends[(size_t) i]), std::move (gainFunction), returnNodeID);
+                    static_cast<GainNode*> (gainNode.get())->perSampleSource = sends[(size_t) i];     // R8: per-sample send gains
+                    ownedNodes.push_back (std::move (gainNode));
+                }
 				sends.erase (std::find (sends.begin(), sends.end(), sends[(size_t) i]));
 			}
 
