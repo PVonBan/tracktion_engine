@@ -1432,8 +1432,24 @@ juce::StringArray WaveInputDevice::getRecordFormatNames()
 
 InputDeviceInstance* WaveInputDevice::createInstance (EditPlaybackContext& ed)
 {
-    if (! isTrackDevice() && retrospectiveBuffer == nullptr)
-        retrospectiveBuffer = std::make_unique<RetrospectiveRecordBuffer> (ed.edit.engine);
+    // R8: retrospective buffer. Sized here, on the main thread, not on the audio thread at the first play (with many
+    // inputs that is a large memory clear there, and a click); again when no session is using it (a new sample rate)
+    if (! isTrackDevice())
+    {
+        const auto rate = ed.edit.engine.getDeviceManager().getSampleRate();
+        const int chans = getChannelSet().size();
+        if (retrospectiveBuffer == nullptr)
+        {
+            auto b = std::make_unique<RetrospectiveRecordBuffer> (ed.edit.engine);
+            if (rate > 0 && chans > 0)
+                b->updateSizeIfNeeded (chans, rate);
+            retrospectiveBuffer = std::move (b);
+        }
+        else if (instances.isEmpty() && rate > 0 && chans > 0)
+        {
+            retrospectiveBuffer->updateSizeIfNeeded (chans, rate);
+        }
+    }
 
     return new WaveInputDeviceInstance (*this, ed);
 }
