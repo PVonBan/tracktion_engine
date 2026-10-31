@@ -75,6 +75,17 @@ const char* ReverbPlugin::xmlTypeName = "reverb";
 void ReverbPlugin::initialise (const PluginInitialisationInfo& info)
 {
     outputSilent = true;
+
+    // R8: the reverb starts from its own settings (setSampleRate snaps the smoothed gains to the targets held now)
+    juce::Reverb::Parameters params;
+    params.roomSize   = roomSizeParam->getCurrentValue();
+    params.damping    = dampParam->getCurrentValue();
+    params.wetLevel   = wetParam->getCurrentValue();
+    params.dryLevel   = dryParam->getCurrentValue();
+    params.width      = widthParam->getCurrentValue();
+    params.freezeMode = modeParam->getCurrentValue();
+    reverb.setParameters (params);
+
     reverb.setSampleRate (info.sampleRate);
 }
 
