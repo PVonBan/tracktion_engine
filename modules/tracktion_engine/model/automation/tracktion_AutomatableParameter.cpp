@@ -247,10 +247,14 @@ public:
                 if (! plugin->isClipEffectPlugin())
                     return;
 
-        const juce::ScopedLock sl (parameterStreamLock);
+        // R8: automation without blocking: never wait for the message thread's rebuild; the position is set next block
+        if (! parameterStreamLock.tryEnter())
+            return;
 
-        if (lastTime.exchange (time) != time)
+        if (parameterStream != nullptr && lastTime.exchange (time) != time)
             parameterStream->setPosition (time);
+
+        parameterStreamLock.exit();
     }
 
     bool isEnabled() override
@@ -260,8 +264,18 @@ public:
 
     float getCurrentValue() override
     {
-        const juce::ScopedLock sl (parameterStreamLock);
-        return parameterStream->getCurrentValue();
+        // R8: automation without blocking: the previous block's value while the message thread rebuilds the iterator
+        if (! parameterStreamLock.tryEnter())
+            return r8LastValue.load (std::memory_order_relaxed);
+
+        float v = r8LastValue.load (std::memory_order_relaxed);
+
+        if (parameterStream != nullptr)
+            v = parameterStream->getCurrentValue();
+
+        parameterStreamLock.exit();
+        r8LastValue.store (v, std::memory_order_relaxed);
+        return v;
     }
 
     AutomatableParameter& parameter;
@@ -273,6 +287,7 @@ private:
     std::unique_ptr<AutomationIterator> parameterStream;
     std::atomic<bool> automationActive { false };
     std::atomic<TimePosition> lastTime { TimePosition::fromSeconds (-1.0) };
+    std::atomic<float> r8LastValue { 0.0f };      // R8: automation without blocking
     std::unique_ptr<AutomatableParameter::ScopedActiveParameter> scopedActiveParameter;
 
     void updateIterator()
@@ -294,26 +309,31 @@ private:
                 newStream = std::move (s);
         }
 
+        // R8: automation without blocking: the marker is made before the lock, the old iterator and marker freed after
+        std::unique_ptr<AutomatableParameter::ScopedActiveParameter> activeParam;
+        bool followCurve = false;
+        TimePosition followTime;
+
+        if (newStream != nullptr)
+            activeParam = std::make_unique<AutomatableParameter::ScopedActiveParameter> (parameter);
+
         {
             const juce::ScopedLock sl (parameterStreamLock);
             automationActive.store (newStream != nullptr, std::memory_order_relaxed);
-            parameterStream = std::move (newStream);
+            std::swap (parameterStream, newStream);    // newStream now holds the old iterator
+            std::swap (scopedActiveParameter, activeParam);    // activeParam now holds the old marker (or nothing)
 
-            if (parameterStream)
+            if (parameterStream == nullptr)
             {
-                auto activeParam = std::make_unique<AutomatableParameter::ScopedActiveParameter> (parameter);
-                std::swap (scopedActiveParameter, activeParam);
-            }
-            else
-            {
-                scopedActiveParameter.reset();
-
-                if (! editLoading)
-                    parameter.updateToFollowCurve (lastTime);
+                followCurve = ! editLoading;
+                followTime = lastTime;
             }
 
             lastTime = -1.0s;
         }
+
+        if (followCurve)
+            parameter.updateToFollowCurve (followTime);
     }
 
     static juce::ValueTree getState (AutomatableParameter& ap)
@@ -545,9 +565,16 @@ private:
             return automationActive.load (std::memory_order_relaxed);
         }
 
+        std::atomic<bool> r8LastEnabled { false };     // R8: automation without blocking
+        std::atomic<float> r8LastValue { 0.0f };
+
         bool setPosition (TimePosition editTime)
         {
-            const juce::ScopedLock sl (parameterStreamLock);
+            // R8: automation without blocking: while the message thread rebuilds, keep the previous block's answer
+            if (! parameterStreamLock.tryEnter())
+                return r8LastEnabled.load (std::memory_order_relaxed);
+
+            bool enabled = false;
 
             if (parameterStream)
             {
@@ -558,21 +585,28 @@ private:
                 {
                     parameterStream->setPosition (toTime (*modifiedPos,
                                                   getTempoSequence (curveModifier).getInternalSequence()));
-                    return true;
+                    enabled = true;
                 }
             }
 
-            return false;
+            parameterStreamLock.exit();
+            r8LastEnabled.store (enabled, std::memory_order_relaxed);
+            return enabled;
         }
 
         float getCurrentValue()
         {
-            const juce::ScopedLock sl (parameterStreamLock);
+            if (! parameterStreamLock.tryEnter())
+                return r8LastValue.load (std::memory_order_relaxed);
+
+            float v = 0.0f;
 
             if (parameterStream)
-                return parameterStream->getCurrentValue();
+                v = parameterStream->getCurrentValue();
 
-            return 0.0f;
+            parameterStreamLock.exit();
+            r8LastValue.store (v, std::memory_order_relaxed);
+            return v;
         }
 
         void updateCachedIterator()
@@ -590,7 +624,7 @@ private:
             {
                 const juce::ScopedLock sl (parameterStreamLock);
                 automationActive.store (newStream != nullptr, std::memory_order_relaxed);
-                parameterStream = std::move (newStream);
+                std::swap (parameterStream, newStream);    // R8: automation without blocking: the old one is freed after the lock
             }
         }
 
