@@ -629,7 +629,9 @@ MidiOutputDeviceInstance::~MidiOutputDeviceInstance()
 
 juce::String MidiOutputDeviceInstance::prepareToPlay (TimePosition, bool shouldSendMidiTC)
 {
-    if (getMidiOutput().outputDevice == nullptr)
+    // R8: a MIDI output without a system port (the hosted device's "MIDI Output", whose messages go to the host's
+    // processBlock) is open: it sends clock and timecode like any other
+    if (getMidiOutput().outputDevice == nullptr && ! (getMidiOutput().deviceInfo.identifier.isEmpty() && ! getMidiOutput().softDevice))
         return TRANS("Couldn't open the MIDI port");
 
     shouldSendMidiTimecode = shouldSendMidiTC;
@@ -643,7 +645,7 @@ juce::String MidiOutputDeviceInstance::prepareToPlay (TimePosition, bool shouldS
 
 bool MidiOutputDeviceInstance::start()
 {
-    if (getMidiOutput().outputDevice != nullptr)
+    if (getMidiOutput().outputDevice != nullptr || (getMidiOutput().deviceInfo.identifier.isEmpty() && ! getMidiOutput().softDevice))   // (R8: port-less outputs too)
     {
         audioAdjustmentDelay = juce::roundToInt (2.0 * edit.engine.getDeviceManager().getBlockSizeMs());
         playing = true;
