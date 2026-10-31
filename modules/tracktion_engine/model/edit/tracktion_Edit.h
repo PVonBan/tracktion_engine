@@ -931,6 +931,7 @@ private:
     std::atomic<bool> isLoadInProgress { true };
     std::atomic<int> performingRenderCount { 0 };
     bool shouldRestartPlayback = false;
+    int r8FadeWaits = 0, r8FadeInMs = 0;     // R8: restart fade
     bool blinkBright = false;
     bool lowLatencyMonitoring = false;
     bool latencyCompensationEnabled = true;
@@ -1006,6 +1007,14 @@ private:
     void loadOldStyleMarkers();
 
     void timerCallback() override;
+
+public:
+    /** R8: restart fade. Asked before the graph is rebuilt while playing: 0 rebuilds at once; otherwise the output fades
+        out first and back in this many milliseconds after the rebuild. Message thread. */
+    std::function<int()> r8RestartFadeMs;
+    /** R8: restart fade. A rebuild asked for and not done yet, or waiting for the fade. */
+    bool r8RestartPending() const noexcept   { return shouldRestartPlayback || r8FadeWaits > 0; }
+private:
 
     void readFrozenTracksFiles();
     void updateFrozenTracks();

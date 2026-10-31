@@ -1830,6 +1830,29 @@ void Edit::timerCallback()
 
     if (shouldRestartPlayback && shouldPlay())
     {
+        // R8: restart fade
+        if (r8RestartFadeMs && getTransport().isPlaying())
+        {
+            auto& dm = engine.getDeviceManager();
+            if (r8FadeWaits == 0)
+            {
+                const int ms = r8RestartFadeMs();
+                if (ms > 0)
+                {
+                    dm.r8OutputTarget.store (0.0f);
+                    r8FadeWaits = 1;
+                    r8FadeInMs = ms;
+                }
+            }
+            if (r8FadeWaits > 0)
+            {
+                if (! dm.r8OutputSilent.load() && ++r8FadeWaits < 60)
+                    return;     // (the timer goes on: try again in a millisecond)
+                r8FadeWaits = 0;
+                juce::Timer::callAfterDelay (r8FadeInMs, [&dm] { dm.r8OutputTarget.store (1.0f); });
+            }
+        }
+
         shouldRestartPlayback = false;
         parameterControlMappings->checkForDeletedParams();
 

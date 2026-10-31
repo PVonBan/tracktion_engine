@@ -1336,8 +1336,11 @@ void DeviceManager::audioDeviceIOCallbackWithContext (const float* const* inputC
         audioDeviceIOCallbackInternal (inputChannelData, numInputChannels,
                                        outputChannelData, totalNumOutputChannels,
                                        numSamples);
+        r8ApplyOutputFade (outputChannelData, totalNumOutputChannels, numSamples);     // R8: restart fade
         return;
     }
+
+    const int r8TotalSamples = numSamples;     // R8: restart fade
 
     for (int sampleStartIndex = 0;;)
     {
@@ -1359,6 +1362,36 @@ void DeviceManager::audioDeviceIOCallbackWithContext (const float* const* inputC
         if (numSamples == 0)
             break;
     }
+
+    r8ApplyOutputFade (outputChannelData, totalNumOutputChannels, r8TotalSamples);     // R8: restart fade
+}
+
+// R8: restart fade
+void DeviceManager::r8ApplyOutputFade (float* const* out, int numOut, int numSamples) noexcept
+{
+    r8Callbacks.fetch_add (1, std::memory_order_release);
+    const float target = r8OutputTarget.load (std::memory_order_relaxed);
+    if (r8OutputGain == target)
+    {
+        r8OutputSilent.store (target == 0.0f, std::memory_order_relaxed);
+        if (target == 0.0f)
+            for (int c = 0; c < numOut; ++c)
+                if (out[c] != nullptr)
+                    juce::FloatVectorOperations::clear (out[c], numSamples);
+        return;
+    }
+    const double sr = getSampleRate();
+    const float step = 1.0f / (float) std::max (16.0, (sr > 0 ? sr : 48000.0) * 0.010);
+    float g = r8OutputGain;
+    for (int i = 0; i < numSamples; ++i)
+    {
+        g = target > g ? std::min (target, g + step) : std::max (target, g - step);
+        for (int c = 0; c < numOut; ++c)
+            if (out[c] != nullptr)
+                out[c][i] *= g;
+    }
+    r8OutputGain = g;
+    r8OutputSilent.store (g == 0.0f, std::memory_order_relaxed);
 }
 
 void DeviceManager::audioDeviceIOCallbackInternal (const float* const* inputChannelData, int numInputChannels,

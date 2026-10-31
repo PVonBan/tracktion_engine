@@ -50,6 +50,13 @@ public:
 
     //==============================================================================
     double getSampleRate() const;
+
+    // R8: restart fade. The whole output's fader: 1 heard, 0 silent; glides over 10 ms, per sample.
+    std::atomic<float> r8OutputTarget { 1.0f };
+    std::atomic<bool> r8OutputSilent { false };
+    std::atomic<uint64_t> r8Callbacks { 0 };      // audio callbacks so far (how Recorder 8 knows an old graph has gone)
+    float r8OutputGain = 1.0f;
+    void r8ApplyOutputFade (float* const* out, int numOut, int numSamples) noexcept;
     int getBitDepth() const;
     int getBlockSize() const;
     TimeDuration getBlockLength() const;
