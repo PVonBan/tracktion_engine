@@ -505,11 +505,18 @@ void Plugin::baseClassInitialise (const PluginInitialisationInfo& info)
     TRACKTION_ASSERT_MESSAGE_THREAD
     const bool sampleRateOrBlockSizeChanged = (sampleRate != info.sampleRate) || (blockSizeSamples != info.blockSizeSamples);
     bool hasUpdatedWithoutStopping = false;
-    sampleRate = info.sampleRate;
-    blockSizeSamples = info.blockSizeSamples;
     cpuUsageMs = 0.0;
 
+    // R8: a graph rebuilt while playing initialises its plug-ins here (message thread) while the old graph's thread
+    // is still running applyToBuffer on them, which reads sampleRate / blockSizeSamples. With the same rate and block
+    // size the values are identical, so write them only when they change, or when no graph holds the plug-in yet
+    // (initialiseCount == 0: also restores timeToCpuScale, which baseClassDeinitialise zeroes). Then nothing the old
+    // graph reads is touched. (A real change while another graph holds it is what the assertion below rejects.)
+    if (initialiseCount == 0 || sampleRateOrBlockSizeChanged)
     {
+        sampleRate = info.sampleRate;
+        blockSizeSamples = info.blockSizeSamples;
+
         const double msPerBlock = (sampleRate > 0.0) ? (1000.0 * (blockSizeSamples / sampleRate)) : 0.0;
         timeToCpuScale = (msPerBlock > 0.0) ? (1.0 / msPerBlock) : 0.0;
     }
