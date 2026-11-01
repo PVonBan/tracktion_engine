@@ -282,12 +282,12 @@ struct EditPlaybackContext::NodePlaybackContext
 
     void setSpeedCompensation (double plusOrMinus)
     {
-        speedCompensation = juce::jlimit (-10.0, 10.0, plusOrMinus);
+        speedCompensation.store (juce::jlimit (-10.0, 10.0, plusOrMinus), std::memory_order_relaxed);
     }
 
     void setTempoAdjustment (double plusOrMinusProportion)
     {
-        blockLengthScaleFactor = 1.0 + std::clamp (plusOrMinusProportion, -0.5, 0.5);
+        blockLengthScaleFactor.store (1.0 + std::clamp (plusOrMinusProportion, -0.5, 0.5), std::memory_order_relaxed);
     }
 
     void checkForTempoSequenceChanges()
@@ -311,18 +311,23 @@ struct EditPlaybackContext::NodePlaybackContext
 
     void updateReferenceSampleRange (int numSamples)
     {
-        if (speedCompensation != 0.0)
-            numSamples = juce::roundToInt (numSamples * (1.0 + (speedCompensation * 0.01)));
+        // R8: written by the message thread (VARI), read here on the audio thread: one read of each per block,
+        // so a block's duration and its playback speed ratio always come from the same value
+        const auto speedComp = speedCompensation.load (std::memory_order_relaxed);
+        const auto scaleFactor = blockLengthScaleFactor.load (std::memory_order_relaxed);
+
+        if (speedComp != 0.0)
+            numSamples = juce::roundToInt (numSamples * (1.0 + (speedComp * 0.01)));
 
         double sampleDuration = static_cast<double> (numSamples);
 
-        if (blockLengthScaleFactor != 1.0)
-            sampleDuration *= blockLengthScaleFactor;
+        if (scaleFactor != 1.0)
+            sampleDuration *= scaleFactor;
 
         referenceStreamRange = juce::Range<double>::withStartAndLength (referenceStreamRange.getEnd(), sampleDuration);
         playHead.setReferenceSampleRange (getReferenceSampleRange());
         numSamplesToProcess = static_cast<choc::buffer::FrameCount> (numSamples);
-        processState.setPlaybackSpeedRatio (blockLengthScaleFactor);
+        processState.setPlaybackSpeedRatio (scaleFactor);
 
         // This needs to be called after the playhead reference range has been set above
         checkForTempoSequenceChanges();
@@ -466,7 +471,7 @@ private:
     juce::Range<double> referenceStreamRange;
     std::atomic<double> pendingPosition { 0.0 }, pendingPositionJumpTime { 0.0 };
     std::atomic<bool> positionUpdatePending { false }, pendingRollInToLoop { false }, pendingPositionJumpTimeValid { false }, playPending { false };
-    double speedCompensation = 0.0, blockLengthScaleFactor = 1.0;
+    std::atomic<double> speedCompensation { 0.0 }, blockLengthScaleFactor { 1.0 }; // R8: see updateReferenceSampleRange
     std::vector<std::unique_ptr<juce::LagrangeInterpolator>> interpolators;
     bool isUsingInterpolator = false;
 
