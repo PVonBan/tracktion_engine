@@ -34,6 +34,14 @@ struct CreateNodeParams
     juce::Array<EditItemID> tracksToProcessWhileMuted = {};  /**< Tracks whose contents keep processing while the track is muted, so they can feed sidechains, aux buses and racks without being heard. Used by stem renders. @see Renderer::Parameters::tracksToProcessWhileMuted */
     bool allowClipSlots = true;                         /**< If true, track's clip slots will be included, set to false to disable these (which will use a slightly more efficient Node). */
     juce::Array<EditItemID> r8ExcludedTracks;          /**< R8: render-ahead. Tracks left out of the graph entirely, also as other tracks' inputs. */
+
+    /** R8: the merged channel. For an AudioTrack listed here, createNodeForAudioTrack builds the track's input tracks
+        as usual and then offers that Node (nullptr when the track has none) to the factory, which takes it and returns
+        the Node for the whole track in place of the track's plug-in list, muting node and sends. A nullptr from the
+        factory means "not this track" (the input left untaken): the track is built as usual. Only for tracks with no
+        clips, live inputs or MIDI listeners. */
+    juce::Array<EditItemID> r8ChannelTracks;
+    std::function<std::unique_ptr<graph::Node> (AudioTrack&, std::unique_ptr<graph::Node>& input, const CreateNodeParams&)> r8ChannelNodeFactory;
     bool readAheadTimeStretchNodes = false;             /**< TEMPORARY: If true, real-time time-stretch Nodes will use a larger buffer and background thread to reduce audio CPU use. */
 
     /** If set, this will be called for each output device to give an opportunity to add an
@@ -67,6 +75,12 @@ std::unique_ptr<tracktion::graph::Node> createNodeForEdit (Edit&, const CreateNo
 /** R8: render-ahead. Creates the Node for one track, as the Edit's own graph would (its clips, input tracks, plugins
     and muting), for a host that builds part of an Edit's graph itself. */
 std::unique_ptr<tracktion::graph::Node> createNodeForSingleTrack (Track&, const CreateNodeParams&);
+
+/** R8: the merged channel. Creates the Node for one plug-in on top of `node`, as the plug-in list builder does (a
+    PluginNode, with channel remapping and sidechain input where needed); for a channel-node factory that keeps some
+    plug-ins as their own nodes. */
+std::unique_ptr<tracktion::graph::Node> r8CreateNodeForPlugin (Plugin&, const TrackMuteState*, std::unique_ptr<tracktion::graph::Node> node,
+                                                               const CreateNodeParams&);
 
 /** Wraps a Plugin as a generator Node (driven by a silent input) and sums it into the supplied
     output Node. Intended to be returned from CreateNodeParams::insertOptionalLastStageNodeForDevice

@@ -109,6 +109,7 @@
 namespace tracktion_engine = tracktion::engine;
 
 #include "tracktion_graph/tracktion_Node.h"
+#include "tracktion_graph/tracktion_MultiSendSource.h"
 #include "tracktion_graph/tracktion_Utility.h"
 
 #include "utilities/tracktion_AudioBufferPool.h"
@@ -136,6 +137,7 @@ namespace tracktion_engine = tracktion::engine;
 #include "tracktion_graph/nodes/tracktion_ConnectedNode.h"
 #include "tracktion_graph/nodes/tracktion_LatencyNode.h"
 #include "tracktion_graph/nodes/tracktion_SummingNode.h"
+#include "tracktion_graph/nodes/tracktion_R8BusSumNode.h"
 
 #include "tracktion_graph/players/tracktion_SimpleNodePlayer.h"
 

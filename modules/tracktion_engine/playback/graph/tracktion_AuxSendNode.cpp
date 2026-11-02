@@ -76,12 +76,7 @@ void AuxSendNode::prepareToPlay (const tracktion::graph::PlaybackInitialisationI
 {
     sampleRate = info.sampleRate;
 
-    // R8: per-sample send gains
-    r8Gains.assign ((size_t) std::max (info.blockSize, 1) * 2, 0.0f);
-    r8RampLen = std::max (16, (int) std::lround (info.sampleRate * 0.010));
-    r8Started = false;
-    r8GridValid = false;
-    r8Left = 0;
+    r8Gains.prepare (info.sampleRate, info.blockSize);      // R8: per-sample send gains
 
     if (auto props = getNodeProperties(); props.latencyNumSamples > 0)
         automationAdjustmentTime = TimeDuration::fromSamples (-props.latencyNumSamples, sampleRate);
@@ -100,89 +95,100 @@ void AuxSendNode::process (ProcessContext& pc)
     }
 
     SendNode::process (pc);
-    r8WorkOutGains (pc);
+    r8Gains.workOut (sendPlugin, playHeadState, r8MuteState, r8SendsWhenMuted, sampleRate, automationAdjustmentTime,
+                     pc.buffers.audio.getNumFrames(), pc.referenceSampleRange.getStart());     // R8: per-sample send gains
 }
 
 // R8: per-sample send gains --------------------------------------------------------------------------------------
-float AuxSendNode::r8Level (double seconds, AuxSendPlugin::LevelSource* src) noexcept
+void R8SendGains::prepare (double sampleRate, int blockSize)
+{
+    gains.assign ((size_t) std::max (blockSize, 1) * 2, 0.0f);
+    rampLen = std::max (16, (int) std::lround (sampleRate * 0.010));
+    started = false;
+    gridValid = false;
+    left = 0;
+}
+
+float R8SendGains::level (double seconds, AuxSendPlugin& sendPlugin, AuxSendPlugin::LevelSource* src) noexcept
 {
     return src != nullptr ? src->gainAt (seconds) : volumeFaderPositionToGain (sendPlugin.gain->getCurrentValue());
 }
 
-void AuxSendNode::r8WorkOutGains (ProcessContext& pc)
+void R8SendGains::workOut (AuxSendPlugin& sendPlugin, tracktion::graph::PlayHeadState& playHeadState, const TrackMuteState* muteState,
+                           bool sendsWhenMuted, double sampleRate, TimeDuration automationAdjustmentTime,
+                           choc::buffer::FrameCount numFrames, int64_t referenceStart)
 {
-    const auto numFrames = pc.buffers.audio.getNumFrames();
-    r8NumGains = 0;
-    if (numFrames == 0 || numFrames > r8Gains.size())
+    numGains = 0;
+    if (numFrames == 0 || numFrames > gains.size())
         return;
 
     bool silent = false;
-    if (r8MuteState != nullptr)
+    if (muteState != nullptr)
     {
-        if (r8SendsWhenMuted)
-            silent = ! r8MuteState->shouldTrackBeAudible() && ! r8MuteState->shouldTrackContentsBeProcessed();
+        if (sendsWhenMuted)
+            silent = ! muteState->shouldTrackBeAudible() && ! muteState->shouldTrackContentsBeProcessed();
         else
-            silent = ! r8MuteState->shouldTrackBeAudible() || ! r8MuteState->shouldTrackContentsBeProcessed();
+            silent = ! muteState->shouldTrackBeAudible() || ! muteState->shouldTrackContentsBeProcessed();
     }
     const float sign = sendPlugin.invertPhase ? -1.0f : 1.0f;
     auto* src = sendPlugin.levelSource.load (std::memory_order_acquire);
     const bool playing = playHeadState.playHead.isPlaying();
-    const auto pos0 = playHeadState.playHead.referenceSamplePositionToTimelinePosition (pc.referenceSampleRange.getStart())
+    const auto pos0 = playHeadState.playHead.referenceSamplePositionToTimelinePosition (referenceStart)
                         + (int64_t) std::llround (automationAdjustmentTime.inSeconds() * sampleRate);
     constexpr int64_t grid = 16;
-    const float plain = src == nullptr ? r8Level (0.0, nullptr) : 0.0f;
+    const float plain = src == nullptr ? level (0.0, sendPlugin, nullptr) : 0.0f;
     if (src == nullptr)
-        r8GridValid = false;
+        gridValid = false;
 
     for (choc::buffer::FrameCount i = 0; i < numFrames; ++i)
     {
-        float level = plain;
+        float lvl = plain;
         if (src != nullptr)
         {
             const int64_t pos = playing ? pos0 + (int64_t) i : pos0;
             const int64_t g = pos >= 0 ? (pos / grid) * grid : ((pos - grid + 1) / grid) * grid;
-            if (! r8GridValid || g != r8GridPos)
+            if (! gridValid || g != gridPos)
             {
-                if (r8GridValid && g == r8GridPos + grid)
-                    r8Grid0 = r8Grid1;
+                if (gridValid && g == gridPos + grid)
+                    grid0 = grid1;
                 else
-                    r8Grid0 = r8Level ((double) g / sampleRate, src);
-                r8Grid1 = r8Level ((double) (g + grid) / sampleRate, src);
-                r8GridPos = g;
-                r8GridValid = true;
+                    grid0 = level ((double) g / sampleRate, sendPlugin, src);
+                grid1 = level ((double) (g + grid) / sampleRate, sendPlugin, src);
+                gridPos = g;
+                gridValid = true;
             }
-            level = r8Grid0 + (r8Grid1 - r8Grid0) * (float) (pos - g) * (1.0f / (float) grid);
+            lvl = grid0 + (grid1 - grid0) * (float) (pos - g) * (1.0f / (float) grid);
         }
-        const float target = silent ? 0.0f : level * sign;
+        const float target = silent ? 0.0f : lvl * sign;
 
-        if (! r8Started)
+        if (! started)
         {
-            r8Cur = target;
-            r8Started = true;
+            cur = target;
+            started = true;
         }
-        else if (r8Left > 0)
+        else if (left > 0)
         {
-            r8Cur += (target - r8Cur) / (float) r8Left;
-            if (--r8Left == 0)
-                r8Cur = target;
+            cur += (target - cur) / (float) left;
+            if (--left == 0)
+                cur = target;
         }
-        else if (src != nullptr ? std::abs (target - r8Cur) > 0.01f : target != r8Cur)
+        else if (src != nullptr ? std::abs (target - cur) > 0.01f : target != cur)
         {
-            r8Left = r8RampLen;
-            r8Cur += (target - r8Cur) / (float) r8Left;
-            --r8Left;
+            left = rampLen;
+            cur += (target - cur) / (float) left;
+            --left;
         }
         else
-            r8Cur = target;
+            cur = target;
 
-        r8Gains[(size_t) i] = r8Cur;
+        gains[(size_t) i] = cur;
     }
-    r8NumGains = numFrames;
+    numGains = numFrames;
 }
 
 const float* AuxSendNode::getPerSampleGains (choc::buffer::FrameCount numFrames)
 {
-    return numFrames == r8NumGains && r8NumGains > 0 ? r8Gains.data() : nullptr;
+    return r8Gains.get (numFrames);
 }
 
 } // namespace tracktion::inline engine

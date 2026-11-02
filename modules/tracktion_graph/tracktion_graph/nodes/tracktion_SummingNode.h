@@ -55,6 +55,13 @@ public:
         ownedNodes.push_back (std::move (newInput));
     }
 
+    /** R8: the merged channel. Hands the owned inputs over (R8BusSumNode flattening this node into itself); the
+        referenced list (getDirectInputNodes) stays as it is. */
+    std::vector<std::unique_ptr<Node>> r8TakeOwnedNodes()
+    {
+        return std::move (ownedNodes);
+    }
+
     /** Enables Nodes to be intermediately summed using double precision.
         This must be set before the node is initialised.
         N.B. The output will still be single-precision floats.

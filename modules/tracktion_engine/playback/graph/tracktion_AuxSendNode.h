@@ -9,6 +9,7 @@
 */
 
 #pragma once
+#include "tracktion_R8SendGains.h"
 
 namespace tracktion::inline engine {
 
@@ -39,16 +40,7 @@ private:
     // R8: per-sample send gains
     const TrackMuteState* r8MuteState = nullptr;
     bool r8SendsWhenMuted = false;
-    std::vector<float> r8Gains;
-    choc::buffer::FrameCount r8NumGains = 0;
-    float r8Cur = 0.0f;
-    int r8Left = 0, r8RampLen = 480;
-    bool r8Started = false;
-    int64_t r8GridPos = 0;
-    bool r8GridValid = false;
-    float r8Grid0 = 0.0f, r8Grid1 = 0.0f;
-    float r8Level (double seconds, AuxSendPlugin::LevelSource*) noexcept;
-    void r8WorkOutGains (ProcessContext&);
+    R8SendGains r8Gains;
 
     //==============================================================================
     tracktion::graph::PlayHeadState& playHeadState;

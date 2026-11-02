@@ -685,6 +685,83 @@ private:
     const int busID;
     bool hasInitialised = false, canUseSourceBuffers = false;
 
+    // R8: the merged channel (see findSendNodes). True when a MultiSendSource feeds this bus: `input` is then the
+    // R8BusSumNode. `sends` are the bus's SendNodes, feedback already removed.
+    bool r8FindMultiSendSources (TransformOptions& options, const std::vector<SendNode*>& sends)
+    {
+        struct Found { Node* node; SendNode* send; int index; MultiSendSource* source; };     // (one of send / index)
+        std::vector<Found> found;
+        bool anySource = false;
+
+        for (auto n : options.postOrderedNodes)
+        {
+            if (auto send = dynamic_cast<SendNode*> (n))
+            {
+                if (std::find (sends.begin(), sends.end(), send) != sends.end())
+                    found.push_back ({ n, send, -1, nullptr });
+
+                continue;
+            }
+
+            if (auto source = dynamic_cast<MultiSendSource*> (n))
+            {
+                for (int k = 0; k < source->getNumSends(); ++k)
+                {
+                    if (source->getSendBusID (k) != busID)
+                        continue;
+
+                    bool feedsBack = false;
+                    visitNodes (*n, [&] (Node& v) { if (&v == this) feedsBack = true; }, true);
+
+                    if (feedsBack)
+                        continue;
+
+                    found.push_back ({ n, nullptr, k, source });
+                    anySource = true;
+                }
+            }
+        }
+
+        if (! anySource)
+            return false;
+
+        const auto returnNodeID = getNodeProperties().nodeID;
+        std::vector<R8BusSumNode::Entry> entries;
+        std::vector<std::unique_ptr<Node>> owned;
+
+        if (input)
+        {
+            entries.push_back ({ input.get(), -1, nullptr });
+            owned.push_back (std::move (input));
+        }
+
+        for (int i = (int) found.size(); --i >= 0;)
+        {
+            auto& f = found[(size_t) i];
+
+            if (f.send != nullptr)
+            {
+                auto gainFunction = f.send->getGainFunction();
+
+                if (! gainFunction)
+                {
+                    entries.insert (entries.begin(), { f.node, -1, nullptr });      // (a SummingNode puts referenced inputs first)
+                    continue;
+                }
+
+                auto gainNode = makeNode<GainNode> (f.send, std::move (gainFunction), returnNodeID);
+                static_cast<GainNode*> (gainNode.get())->perSampleSource = f.send;
+                entries.push_back ({ gainNode.get(), -1, nullptr });
+                owned.push_back (std::move (gainNode));
+            }
+            else
+                entries.push_back ({ f.node, f.index, f.source });
+        }
+
+        input = makeNode<R8BusSumNode> (std::move (entries), std::move (owned));
+        return true;
+    }
+
     void findSendNodes (TransformOptions& options)
     {
         // This can only be initialised once as otherwise the latency nodes will get created again
@@ -732,6 +809,16 @@ private:
         sends.erase (std::remove_if (sends.begin(), sends.end(),
                                      [&] (auto n) { return std::find (sendsToRemove.begin(), sendsToRemove.end(), n) != sendsToRemove.end(); }),
                      sends.end());
+
+        // R8: the merged channel. A bus fed by a MultiSendSource (its sends already gained, in its own buffers) is
+        // summed by an R8BusSumNode in the order the SummingNode below would use: this node's input, then every send
+        // in reverse discovery order, a SendNode's through its GainNode as below, a source's straight from its buffer.
+        // Nothing changes for a bus no such source feeds.
+        if (r8FindMultiSendSources (options, sends))
+        {
+            hasInitialised = true;
+            return;
+        }
 
         // Create a summing node if required
         if (sends.size() > 0)

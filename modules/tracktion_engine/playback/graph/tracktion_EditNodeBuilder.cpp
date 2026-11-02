@@ -1601,7 +1601,10 @@ std::unique_ptr<tracktion::graph::Node> createNodeForAudioTrack (AudioTrack& at,
         trackMuteState->setKeepProcessingWhileMuted();
     }
 
-    std::unique_ptr<Node> node = createClipsNode (at, *clipsMuteState, params);
+    // R8: the merged channel. A listed track with no clips gets no clips node (an empty one, silent, would only be summed in)
+    const bool r8Channel = params.r8ChannelNodeFactory != nullptr && params.r8ChannelTracks.contains (at.itemID)
+                            && at.getClips().isEmpty() && at.getListeners().isEmpty();
+    std::unique_ptr<Node> node = r8Channel ? nullptr : createClipsNode (at, *clipsMuteState, params);
     if (node)
     {
         // When recording, clips should be muted but the plugin should still be audible so use two muting Nodes
@@ -1626,6 +1629,30 @@ std::unique_ptr<tracktion::graph::Node> createNodeForAudioTrack (AudioTrack& at,
 
     if (node)
         node = makeNode<LiveMidiInjectingNode> (at, std::move (node));
+
+    // R8: the merged channel. The host's node for the whole track, in place of the track's silent stub, plug-in list,
+    // muting and sends. The input tracks are summed as below; a channel with none gets no input (the factory starts
+    // from silence itself, so no stub node). The factory takes the input only when it accepts the track, and returns
+    // nullptr to decline, leaving the input where it was.
+    if (r8Channel && node == nullptr && liveInputNode == nullptr)
+    {
+        std::unique_ptr<Node> input;
+        if (! inputTracks.isEmpty())
+        {
+            auto sumNode = std::make_unique<SummingNode>();
+            for (auto inputTrack : inputTracks)
+                if (auto n = createNodeForTrack (*inputTrack, params))
+                    sumNode->addInput (std::move (n));
+            input = std::move (sumNode);
+        }
+        if (auto channelNode = params.r8ChannelNodeFactory (at, input, params))
+            return channelNode;
+        if (input != nullptr)           // declined: the input tracks' nodes carry on into the usual chain below
+        {
+            node = std::move (input);
+            inputTracks.clear();
+        }
+    }
 
     if (node == nullptr && inputTracks.isEmpty() && liveInputNode == nullptr)
     {
@@ -2254,6 +2281,13 @@ std::function<std::unique_ptr<tracktion::graph::Node> (std::unique_ptr<tracktion
 std::unique_ptr<tracktion::graph::Node> createNodeForSingleTrack (Track& t, const CreateNodeParams& params)
 {
     return createNodeForTrack (t, params);
+}
+
+// R8: the merged channel
+std::unique_ptr<tracktion::graph::Node> r8CreateNodeForPlugin (Plugin& plugin, const TrackMuteState* trackMuteState,
+                                                               std::unique_ptr<tracktion::graph::Node> node, const CreateNodeParams& params)
+{
+    return createNodeForPlugin (plugin, trackMuteState, std::move (node), params);
 }
 
 } // namespace tracktion::inline engine
