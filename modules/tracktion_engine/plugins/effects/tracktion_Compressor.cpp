@@ -173,6 +173,25 @@ void CompressorPlugin::applyToBuffer (const PluginRenderContext& fc)
     clearChannels (*fc.destBuffer, 2, -1, fc.bufferStartSample, fc.bufferNumSamples);
 }
 
+bool CompressorPlugin::r8AdvanceOnSilence (int numSamples) noexcept
+{
+    if (lastSamp != 0.0f || useSidechainTrigger.get())
+        return false;
+
+    // (as applyToBuffer, the stereo path, with both samples zero: sampAvg is lastSamp * preFilterAmount + 0, zero,
+    // never above the threshold, so the release)
+    const double logThreshold = std::log10 (0.01);
+    const double releaseFactor = std::pow (10.0, logThreshold / (releaseMs.getCurrentValue() * sampleRate / 1000.0));
+
+    for (int i = numSamples; --i >= 0;)
+    {
+        const float sampAvg = 0.0f;
+        currentLevel = (currentLevel - sampAvg) * releaseFactor + sampAvg;
+    }
+
+    return true;
+}
+
 float CompressorPlugin::getThreshold() const
 {
     return thresholdGain.getCurrentValue();

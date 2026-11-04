@@ -56,6 +56,12 @@ public:
     R8State r8GetState() const noexcept             { return { currentLevel, lastSamp }; }
     void r8SetState (R8State s) noexcept            { currentLevel = s.currentLevel; lastSamp = s.lastSamp; }
 
+    /** R8: what applyToBuffer does to the state over a block of digital silence once the detector has settled
+        (lastSamp exactly zero, no sidechain trigger): the detector stays at zero and the level envelope releases, by
+        the same arithmetic, sample by sample. The output of such a block is silence. Returns false and changes
+        nothing when the detector hasn't settled. (A host checks it against applyToBuffer itself before relying on it.) */
+    bool r8AdvanceOnSilence (int numSamples) noexcept;
+
 private:
     double currentLevel = 0.0;
     float lastSamp = 0.0f;
