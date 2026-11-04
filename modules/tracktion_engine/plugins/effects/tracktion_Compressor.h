@@ -48,6 +48,14 @@ public:
     static float getMinThreshold()      { return 0.01f; }
     static float getMaxThreshold()      { return 1.0f; }
 
+    //==============================================================================
+    /** R8: the compressor's running state (its level envelope and its detector's last value), for a host that checks
+        whether processing silence would change it: it saves the state, runs applyToBuffer on a silent sample, compares
+        and puts the state back (Recorder 8's bypass on silence). */
+    struct R8State { double currentLevel = 0.0; float lastSamp = 0.0f; };
+    R8State r8GetState() const noexcept             { return { currentLevel, lastSamp }; }
+    void r8SetState (R8State s) noexcept            { currentLevel = s.currentLevel; lastSamp = s.lastSamp; }
+
 private:
     double currentLevel = 0.0;
     float lastSamp = 0.0f;
