@@ -1275,7 +1275,14 @@ public:
             return;
 
         {
-            const auto blockStart = context.globalStreamTimeToEditTimeUnlooped (streamTime);
+            // R8: a position posted but not applied yet is applied later in this callback (fillNextNodeBlock), so this
+            // block belongs there, not at the play head's old place. A take started behind where the play head stood
+            // (or a count-in's pre-roll) got the gap as silence at its start when the position change missed the
+            // start of play (performRecord's wait for it gives up after 100 ms); a take ahead of it lost a block.
+            auto blockStart = context.globalStreamTimeToEditTimeUnlooped (streamTime);
+
+            if (const auto pending = context.getPendingImmediatePosition())
+                blockStart = *pending;
 
             // R8: real-time recording: never wait for the message thread (it holds the lock while a take starts or
             // stops); a block skipped while a take is running is counted, never lost silently

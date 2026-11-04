@@ -134,6 +134,10 @@ public:
     /** Returns a pending position change if there is one. */
     std::optional<TimePosition> getPendingPositionChange() const;
 
+    /** R8: the position a pending change puts the play head at in the next block it processes (where an input block
+        recorded in the same callback belongs), or nothing if no change is pending or it is a timed jump. */
+    std::optional<TimePosition> getPendingImmediatePosition() const;
+
     void play();
     void stop();
 

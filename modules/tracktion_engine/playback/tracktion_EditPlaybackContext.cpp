@@ -273,6 +273,15 @@ struct EditPlaybackContext::NodePlaybackContext
         return TimePosition::fromSeconds (pendingPosition.load (std::memory_order_relaxed));
     }
 
+    // R8: see EditPlaybackContext::getPendingImmediatePosition
+    std::optional<TimePosition> getPendingImmediatePosition() const
+    {
+        if (! positionUpdatePending.load (std::memory_order_acquire) || pendingPositionJumpTimeValid.load (std::memory_order_acquire))
+            return {};
+
+        return TimePosition::fromSeconds (pendingPosition.load (std::memory_order_acquire));
+    }
+
     void postRollInToLoop (double newPosition)
     {
         pendingPosition.store (newPosition, std::memory_order_release);
@@ -1249,6 +1258,14 @@ std::optional<TimePosition> EditPlaybackContext::getPendingPositionChange() cons
 {
     if (nodePlaybackContext)
         return nodePlaybackContext->getPendingPositionChange();
+
+    return {};
+}
+
+std::optional<TimePosition> EditPlaybackContext::getPendingImmediatePosition() const
+{
+    if (nodePlaybackContext)
+        return nodePlaybackContext->getPendingImmediatePosition();
 
     return {};
 }
