@@ -2539,7 +2539,7 @@ void Edit::setClickTrackOutput (const juce::String& deviceName)
 
 void Edit::setClickTrackVolume (float gain)
 {
-    clickTrackGain = juce::jlimit (0.2f, 1.0f, gain);
+    clickTrackGain = juce::jlimit (0.0f, 4.0f, gain);
     engine.getPropertyStorage().setProperty (SettingID::lastClickTrackLevel, gain);
 }
 

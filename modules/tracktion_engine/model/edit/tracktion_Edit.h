@@ -693,7 +693,7 @@ public:
     TimeRange getClickTrackRange() const noexcept;
 
     /** Returns the click track volume. */
-    float getClickTrackVolume() const noexcept              { return juce::jlimit (0.2f, 1.0f, clickTrackGain.get()); }
+    float getClickTrackVolume() const noexcept              { return juce::jlimit (0.0f, 4.0f, clickTrackGain.get()); }
 
     /** Returns the name of the device being used as the click track output. */
     juce::String getClickTrackDevice() const;
