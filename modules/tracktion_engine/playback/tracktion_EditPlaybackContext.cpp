@@ -1328,6 +1328,21 @@ TimePosition EditPlaybackContext::globalStreamTimeToEditTimeUnlooped (double glo
     return TimePosition::fromSamples (timelinePosition, sampleRate);
 }
 
+TimePosition EditPlaybackContext::globalStreamTimeToRecordedEditTime (double globalStreamTime, bool unlooped) const
+{
+    if (! nodePlaybackContext)
+        return TimePosition();
+
+    // R8: the reference range runs one block ahead of the stream time (fillNextNodeBlock moves it on before playing),
+    // so a stream time maps to where its callback plays only with the reference position moved on by that block
+    // (the audio input path times its blocks the same way: getNextBlockStartUnlooped)
+    const auto sampleRate = getSampleRate();
+    auto& ph = nodePlaybackContext->playHead;
+    const auto ref = tracktion::graph::timeToSample (globalStreamTime, sampleRate) + ph.getReferenceSampleRange().getLength();
+    return TimePosition::fromSamples (unlooped ? ph.referenceSamplePositionToTimelinePositionUnlooped (ref)
+                                               : ph.referenceSamplePositionToTimelinePosition (ref), sampleRate);
+}
+
 TimePosition EditPlaybackContext::getNextBlockStartUnlooped() const
 {
     if (! nodePlaybackContext)

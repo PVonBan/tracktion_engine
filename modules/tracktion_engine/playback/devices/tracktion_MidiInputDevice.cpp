@@ -1044,8 +1044,10 @@ public:
 
         if (recording)
         {
-            auto m1 = juce::MidiMessage (message, context.globalStreamTimeToEditTime (message.getTimeStamp()).inSeconds());
-            auto m2 = juce::MidiMessage (message, context.globalStreamTimeToEditTimeUnlooped (message.getTimeStamp()).inSeconds());
+            // R8: timed where the callback for its stream time plays, as recorded audio is (globalStreamTimeToEditTime
+            // is one block behind that while playing: every recorded note landed one block before audio played with it)
+            auto m1 = juce::MidiMessage (message, context.globalStreamTimeToRecordedEditTime (message.getTimeStamp(), false).inSeconds());
+            auto m2 = juce::MidiMessage (message, context.globalStreamTimeToRecordedEditTime (message.getTimeStamp(), true).inSeconds());
 
             for (auto& recContext : recordingContexts)
                 recContext->liveNotes->push (m1);

@@ -155,6 +155,10 @@ public:
         audio callback before fillNextNodeBlock, it differs from globalStreamTimeToEditTimeUnlooped (streamTime) by
         one block while playing: the play head's reference range is one block ahead of the stream time. */
     TimePosition getNextBlockStartUnlooped() const;
+    /** R8: a stream time (a MIDI message's stamp) as the Edit time where a recording puts it: the place the audio
+        callback for that stream time plays, as the audio input path times its blocks. globalStreamTimeToEditTime is
+        one block behind that while playing, so recorded MIDI landed one block earlier than audio played with it. */
+    TimePosition globalStreamTimeToRecordedEditTime (double globalStreamTime, bool unlooped) const;
     void resyncToGlobalStreamTime (juce::Range<double>, double sampleRate);
 
     /** @internal. Will be removed in a future release. */
