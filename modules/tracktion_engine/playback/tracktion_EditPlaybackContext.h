@@ -151,6 +151,10 @@ public:
 
     TimePosition globalStreamTimeToEditTime (double) const;
     TimePosition globalStreamTimeToEditTimeUnlooped (double) const;
+    /** R8: the Edit time (unlooped) the block about to be processed in this callback plays from. Called from the
+        audio callback before fillNextNodeBlock, it differs from globalStreamTimeToEditTimeUnlooped (streamTime) by
+        one block while playing: the play head's reference range is one block ahead of the stream time. */
+    TimePosition getNextBlockStartUnlooped() const;
     void resyncToGlobalStreamTime (juce::Range<double>, double sampleRate);
 
     /** @internal. Will be removed in a future release. */

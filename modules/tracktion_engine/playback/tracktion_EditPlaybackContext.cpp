@@ -1328,6 +1328,17 @@ TimePosition EditPlaybackContext::globalStreamTimeToEditTimeUnlooped (double glo
     return TimePosition::fromSamples (timelinePosition, sampleRate);
 }
 
+TimePosition EditPlaybackContext::getNextBlockStartUnlooped() const
+{
+    if (! nodePlaybackContext)
+        return TimePosition();
+
+    // fillNextNodeBlock moves the reference range on to start where it ends now, and plays from there
+    auto& ph = nodePlaybackContext->playHead;
+    return TimePosition::fromSamples (ph.referenceSamplePositionToTimelinePositionUnlooped (ph.getReferenceSampleRange().getEnd()),
+                                      getSampleRate());
+}
+
 void EditPlaybackContext::resyncToGlobalStreamTime (juce::Range<double> globalStreamTime, double sampleRate)
 {
     if (! nodePlaybackContext)

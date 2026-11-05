@@ -1279,7 +1279,11 @@ public:
             // block belongs there, not at the play head's old place. A take started behind where the play head stood
             // (or a count-in's pre-roll) got the gap as silence at its start when the position change missed the
             // start of play (performRecord's wait for it gives up after 100 ms); a take ahead of it lost a block.
-            auto blockStart = context.globalStreamTimeToEditTimeUnlooped (streamTime);
+            // R8: and a block reached while already playing (a count-in's pre-roll, a punch-in) belongs where this
+            // callback plays it. globalStreamTimeToEditTimeUnlooped (streamTime) is one block behind that while
+            // playing (the play head's reference range runs one block ahead of the stream time), so a take that
+            // started while playing landed one block earlier than the same take started from a stop.
+            auto blockStart = context.getNextBlockStartUnlooped();
 
             if (const auto pending = context.getPendingImmediatePosition())
                 blockStart = *pending;
